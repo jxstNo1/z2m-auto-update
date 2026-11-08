@@ -5,7 +5,7 @@ Zigbee2MQTT-Geräten über MQTT. Er erkennt die Update-Entitäten automatisch
 und arbeitet die verfügbaren Updates mit einer frei einstellbaren
 Parallelitätsgrenze ab.
 
-[![Zu Home Assistant hinzufügen](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FjxstNo1%2Fz2m-auto-update%2Fblob%2Fmain%2Fz2m_auto_ota_v3.yaml)
+[![Zu Home Assistant hinzufügen](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FjxstNo1%2Fz2m-auto-update%2Fblob%2Fmain%2Fz2m_auto_ota.yaml)
 
 ## Funktionen
 
@@ -47,7 +47,7 @@ In Home Assistant **Einstellungen → Automatisierungen & Szenen → Blueprints
 → Blueprint importieren** öffnen und diese Adresse eintragen:
 
 ```text
-https://github.com/jxstNo1/z2m-auto-update/blob/main/z2m_auto_ota_v3.yaml
+https://github.com/jxstNo1/z2m-auto-update/blob/main/z2m_auto_ota.yaml
 ```
 
 Für den URL-Import muss die Datei ohne Anmeldung erreichbar sein.
@@ -55,9 +55,9 @@ Bei einem privaten Repository die manuelle Installation verwenden.
 
 ### Manuelle Installation
 
-1. [z2m_auto_ota_v3.yaml](z2m_auto_ota_v3.yaml) herunterladen.
+1. [z2m_auto_ota.yaml](z2m_auto_ota.yaml) herunterladen.
 2. Auf Home Assistant als
-   `/config/blueprints/automation/local/z2m_auto_ota_v3.yaml` speichern.
+   `/config/blueprints/automation/local/z2m_auto_ota.yaml` speichern.
 3. Automationen neu laden und eine Automation aus dem Blueprint erstellen.
 
 ## Einstellungen
