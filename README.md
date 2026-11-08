@@ -13,7 +13,8 @@ Parallelitätsgrenze ab.
 - Positive ganze Parallelitätsgrenze ohne feste Obergrenze.
 - Wahlweise freie Plätze laufend auffüllen oder in Gruppen aktualisieren.
 - Einzelne Update-Entitäten ausschließen.
-- MQTT-Basistopic frei einstellen; voreingestellt ist `MQTT`.
+- Update-Start über dieselbe Home-Assistant-Aktion wie der manuelle Updateknopf.
+- Diagnose pro Gerät im Trace sowie Benachrichtigung bei fehlender Startbestätigung.
 - Jederzeit über **Aktionen ausführen** manuell starten.
 
 ## Zwei Arten der Abarbeitung
@@ -69,19 +70,16 @@ Bei einem privaten Repository die manuelle Installation verwenden.
 | Maximale parallele Updates | Beliebige positive ganze Zahl; Standard: 1. |
 | Abarbeitung der Warteschlange | Laufend auffüllen oder erst die ganze Gruppe abschließen. |
 | Pause zwischen Update-Starts | Abstand zwischen zwei Anfragen; Standard: 5 Sekunden. |
-| MQTT-Basistopic | Muss exakt `mqtt.base_topic` in Zigbee2MQTT entsprechen; Standard: `MQTT`. |
+| MQTT-Basistopic | Kompatibilitätsfeld alter Automationen. Der Wert wird nicht mehr für Updatebefehle verwendet. |
 | Ausgeschlossene Firmwareupdates | Geräte, für die keine automatischen Updates gestartet werden sollen. |
 
-**Das MQTT-Basistopic einschließlich Groß-/Kleinschreibung abgleichen.**
-Das Blueprint-Eingabefeld ändert die Zigbee2MQTT-Konfiguration nicht.
-Mit der Voreinstellung gehen Update-Anfragen an:
+Der Update-Start erfolgt über `update.install` auf der jeweiligen
+MQTT-Update-Entität, wie beim manuellen Updateknopf in Home Assistant.
+Home Assistant verwendet dabei die von Zigbee2MQTT per Discovery gelieferten
+Befehls-Topics und Nutzdaten. Der Blueprint baut keinen eigenen MQTT-Befehl mehr.
+Das bisherige Eingabefeld `MQTT-Basistopic` bleibt erhalten, damit bestehende
+Automationen weiterhin geladen werden können.
 
-```text
-MQTT/bridge/request/device/ota_update/update
-```
-
-Bei einer bestehenden Automation kann ein früher gespeicherter Topic-Wert
-Vorrang vor dem Blueprint-Standard haben. Den Wert dort ausdrücklich prüfen.
 Beim Wechsel von einer älteren Version nur eine zuständige Automation aktiv lassen.
 
 Die geplante Uhrzeit ist eine Startzeit, kein Ende eines Updatefensters.
@@ -103,8 +101,9 @@ gemeldete Updates neu; es gibt keine dauerhaft gespeicherte Jobwarteschlange.
 
 ## Fehler und Grenzen
 
-Die Steuerung folgt den Update-Entitäten und deren `in_progress)-Rückmeldung.
-Ohne Startbestätigung innerhalb von zwei Minuten endet der Durchlauf.
+Die Steuerung folgt den Update-Entitäten und deren `in_progress`-Rückmeldung.
+Ohne Startbestätigung innerhalb von zwei Minuten endet der Durchlauf mit
+Fehlermeldung und einer dauerhaften Home-Assistant-Benachrichtigung mit der betroffenen Entität.
 Beim Warten auf Kapazität oder Abschluss gilt ein Timeout von drei Stunden
 pro Wartevorgang. Der Durchlauf wartet auch auf die zuletzt gestarteten Updates.
 
@@ -118,6 +117,43 @@ Eine globale Sperre für andere Update-Starter gibt es nicht.
 
 Zigbee2MQTT empfiehlt aufgrund der Netzbelastung ein OTA-Update gleichzeitig.
 Der Blueprint lässt höhere Werte ausdrücklich zu.
+
+## Aktualisieren und Fehlerdiagnose
+
+Änderungen auf GitHub werden nicht automatisch in Home Assistant übernommen.
+Unter **Einstellungen → Automatisierungen & Szenen → Blueprints** beim
+Blueprint **⋮ → Blueprint erneut importieren** auswählen. Bei manueller
+Installation die vorhandene YAML-Datei ersetzen und Automationen neu laden.
+
+Im Sofortmodus startet die Prüfung nach einem Home-Assistant-Neustart und
+zusätzlich jede Minute. Der Zeitplanmodus bleibt auf die geplante Uhrzeit begrenzt.
+Die Prüfung liest die in Home Assistant gemeldeten Updates; sie sendet keine
+zusätzlichen OTA-Prüfanfragen an Zigbee2MQTT.
+
+Falls verfügbare Updates nicht starten:
+
+1. Die Automation öffnen und den betreffenden Durchlauf unter **Traces/Spuren**
+   auswählen – solange das Update noch verfügbar ist, vor einer manuellen Installation.
+2. Im Schritt mit `device_status` die Werte des betroffenen Geräts prüfen:
+   `state`, `in_progress`, `installed_version`, `latest_version`,
+   `skipped_version`, `install_supported`, `eligible` und `reason`.
+3. `pending` enthält die zum Start ausgewählten Geräte. Bei leerer Warteliste
+   nennt der letzte Schritt den Grund und verweist auf `device_status`.
+4. Bei einer Fehlermeldung den vollständigen Trace exportieren.
+   Die Automation speichert bis zu 20 Durchläufe; bei Minutenprüfung zeitnah exportieren.
+
+Ein Trace nach einer erfolgreichen manuellen Installation kann eine leere
+Warteliste enthalten und erklärt nicht, warum ein früherer Update-Start ausgeblieben ist.
+Bei leerer Warteliste werden keine minütlichen Benachrichtigungen erstellt.
+
+## Änderungen vom 9. November 2026
+
+- Updatebefehle verwenden die Home-Assistant-Aktion `update.install`.
+- Sofortmodus berücksichtigt den Home-Assistant-Start; der Minutenlauf bleibt erhalten.
+- Rohzustände und Auswahlgründe pro Gerät werden im Trace festgehalten.
+- Leere Wartelisten enden mit verständlicher Begründung; fehlende
+  Startbestätigung erzeugt eine Benachrichtigung mit Entity-ID.
+- Namen, Dateipfad, Eingabeschlüssel, Parallelitätsgrenze und Gruppenwahl bleiben erhalten.
 
 ## Validierung
 

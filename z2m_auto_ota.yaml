@@ -74,9 +74,9 @@ blueprint:
     mqtt_base_topic:
       name: MQTT-Basistopic
       description: >
-        Muss exakt mqtt.base_topic deiner Zigbee2MQTT-Instanz entsprechen,
-        einschließlich Groß-/Kleinschreibung. Hier ist MQTT voreingestellt.
-        Die Firmwareupdates werden weiterhin über Zigbee2MQTT ausgeführt.
+        Kompatibilitätsfeld für bestehende Automationen. Der Update-Start
+        verwendet jetzt die in Home Assistant hinterlegte MQTT-Adresse der
+        jeweiligen Update-Entität. Dieser Wert wird nicht mehr für Befehle verwendet.
       default: MQTT
       selector:
         text: {}
@@ -99,13 +99,18 @@ variables:
   raw_limit: !input parallel_limit
   queue_strategy: !input queue_strategy
   pause_time: !input pause_seconds
-  topic_base: !input mqtt_base_topic
   exclusions: !input excluded_entities
 
 mode: single
 max_exceeded: silent
+trace:
+  stored_traces: 20
 
 triggers:
+  - trigger: homeassistant
+    event: start
+    id: startup
+
   - trigger: time
     at: !input start_time
     id: scheduled
@@ -137,8 +142,10 @@ conditions:
   - condition: template
     value_template: >-
       {{
+        (trigger is not defined or trigger is none)
+        or
         (selected_mode == 'instant'
-         and trigger.id in ['instant', 'newly_available'])
+         and trigger.id in ['instant', 'newly_available', 'startup'])
         or
         (selected_mode == 'scheduled'
          and trigger.id == 'scheduled')
@@ -153,44 +160,75 @@ actions:
       - stop: "Maximale parallele Updates muss eine positive ganze Zahl sein."
         error: true
 
-  # Alle Zigbee2MQTT Firmware-Entitäten finden
+  # Alle Zigbee2MQTT-Firmwareupdate-Entitäten erkennen.
   - variables:
       z2m_devices: >-
         {% set ns = namespace(devices=[]) %}
-        {% for e in integration_entities('mqtt')
-           if e.startswith('update.') %}
-          {% set identifiers =
-             device_attr(e, 'identifiers') or [] %}
-          {% for ident in identifiers %}
-            {% if ident | length == 2
-               and ident[0] == 'mqtt'
+        {% for e in integration_entities('mqtt') if e.startswith('update.') %}
+          {% for ident in device_attr(e, 'identifiers') or [] %}
+            {% if ident | length == 2 and ident[0] == 'mqtt'
                and ident[1] is string
                and ident[1].startswith('zigbee2mqtt_0x') %}
-              {% set ns.devices = ns.devices + [
-                {
-                  'entity': e,
-                  'ieee': ident[1][12:]
-                }
-              ] %}
+              {% set ns.devices = ns.devices + [{'entity': e}] %}
             {% endif %}
           {% endfor %}
         {% endfor %}
         {{ ns.devices | unique(attribute='entity') | list }}
 
-  # Nur verfügbare Updates berücksichtigen
+  # Rohwerte und Filterentscheidung im Trace sichern: Eine leere Warteliste
+  # allein erklärt nicht, ob ein Gerät aktuell, unerreichbar oder bereits aktiv ist.
   - variables:
+      device_status: >-
+        {% set ns = namespace(rows=[]) %}
+        {% for d in z2m_devices %}
+          {% set s = states(d.entity) %}
+          {% set p = state_attr(d.entity, 'in_progress') %}
+          {% set active = p is sameas true or
+                          (p is number and p is not sameas false) %}
+          {% set excluded = d.entity in exclusions %}
+          {% set can_install = (state_attr(d.entity, 'supported_features') | int(0)) % 2 == 1 %}
+          {% set eligible = s == 'on' and not excluded and
+                            p is sameas false and can_install %}
+          {% set reason = 'ausgeschlossen' if excluded else
+                          'nicht erreichbar' if s == 'unavailable' else
+                          'Zustand unbekannt' if s == 'unknown' else
+                          'Update läuft bereits' if active else
+                          'kein verfügbares Update (off)' if s == 'off' else
+                          'Updatefortschritt unbekannt' if p is none else
+                          'Installation nicht unterstützt' if not can_install else
+                          'bereit' if eligible else 'Zustand: ' ~ s %}
+          {% set ns.rows = ns.rows + [{
+            'entity': d.entity, 'state': s, 'in_progress': p,
+            'installed_version': state_attr(d.entity, 'installed_version'),
+            'latest_version': state_attr(d.entity, 'latest_version'),
+            'skipped_version': state_attr(d.entity, 'skipped_version'),
+            'install_supported': can_install,
+            'eligible': eligible, 'reason': reason
+          }] %}
+        {% endfor %}
+        {{ ns.rows }}
       pending: >-
         {% set ns = namespace(items=[]) %}
-        {% for d in z2m_devices %}
-          {% set p = state_attr(d.entity, 'in_progress') %}
-          {% if is_state(d.entity, 'on')
-             and d.entity not in exclusions
-             and not (p is sameas true or
-                      (p is number and p is not sameas false)) %}
-            {% set ns.items = ns.items + [d] %}
-          {% endif %}
+        {% for d in device_status if d.eligible %}
+          {% set ns.items = ns.items + [{'entity': d.entity}] %}
         {% endfor %}
         {{ ns.items }}
+
+  - if:
+      - condition: template
+        value_template: "{{ z2m_devices | count == 0 }}"
+    then:
+      - stop: >-
+          Keine Zigbee2MQTT-Update-Entitäten erkannt. MQTT-Integration,
+          Zigbee2MQTT-Discovery und aktivierte Update-Entitäten prüfen.
+
+  - if:
+      - condition: template
+        value_template: "{{ pending | count == 0 }}"
+    then:
+      - stop: >-
+          Keine startbereiten Updates unter {{ z2m_devices | count }} erkannten
+          Entitäten. Gründe und Rohwerte stehen im Trace unter device_status.
 
   # 'single' hält nur einen Scheduler aktiv; die OTA-Geräte laufen parallel.
   - variables:
@@ -234,14 +272,11 @@ actions:
             - variables:
                 requested: "{{ requested + [repeat.item.entity] }}"
 
-            - action: mqtt.publish
-              data:
-                topic: >-
-                  {{ topic_base }}/bridge/request/device/ota_update/update
-                payload: >-
-                  {{ {'id': repeat.item.ieee} | to_json }}
-                qos: 0
-                retain: false
+            # Derselbe Installationsweg wie der Updateknopf in Home Assistant.
+            # MQTT command_topic und payload_install kommen aus der Discovery.
+            - action: update.install
+              target:
+                entity_id: "{{ repeat.item.entity }}"
 
             # Nicht weitere Anfragen senden, bevor der Start bestätigt ist.
             # Ein sofort abgeschlossenes Update (off) ist ebenfalls gültig.
@@ -251,7 +286,27 @@ actions:
                    (p is number and p is not sameas false) or
                    is_state(repeat.item.entity, 'off') }}
               timeout: "00:02:00"
-              continue_on_timeout: false
+              continue_on_timeout: true
+
+            - if:
+                - condition: template
+                  value_template: "{{ not wait.completed }}"
+              then:
+                - action: persistent_notification.create
+                  data:
+                    notification_id: >-
+                      z2m_ota_start_{{ repeat.item.entity | replace('.', '_') }}
+                    title: "Zigbee2MQTT: Update-Start nicht bestätigt"
+                    message: >-
+                      Für {{ repeat.item.entity }} wurde ein Update angefordert,
+                      aber innerhalb von zwei Minuten weder ein laufendes noch
+                      ein abgeschlossenes Update gemeldet. Der Durchlauf wurde
+                      angehalten. Erreichbarkeit und Zigbee2MQTT-Protokoll prüfen.
+                      Ein späterer Durchlauf kann den Start erneut versuchen.
+                - stop: >-
+                    Keine Startbestätigung für {{ repeat.item.entity }}
+                    innerhalb von zwei Minuten.
+                  error: true
 
             - delay:
                 seconds: "{{ pause_time | int(0) }}"
@@ -263,4 +318,5 @@ actions:
   - wait_template: *wait_for_capacity
     timeout: "03:00:00"
     continue_on_timeout: false
+
 
