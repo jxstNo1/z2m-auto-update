@@ -5,6 +5,8 @@ Zigbee2MQTT-Geräten über MQTT. Er erkennt die Update-Entitäten automatisch
 und arbeitet die verfügbaren Updates mit einer frei einstellbaren
 Parallelitätsgrenze ab.
 
+[![Zu Home Assistant hinzufügen](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FjxstNo1%2Fz2m-auto-update%2Fblob%2Fmain%2Fz2m_auto_ota_v3.yaml)
+
 ## Funktionen
 
 - Sofort bei Verfügbarkeit oder täglich zu einer gewählten Uhrzeit starten.
