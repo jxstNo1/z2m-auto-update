@@ -1,0 +1,266 @@
+blueprint:
+  name: "Zigbee2MQTT – Auto OTA Manager v3"
+  description: >
+    Automatische Firmwareupdates aller erkannten
+    Zigbee2MQTT-Geräte mit frei einstellbarer
+    Parallelität, Sofortmodus und Zeitplan.
+    Verwendet die Zigbee2MQTT MQTT API. Alle beim Start verfügbaren Updates
+    werden abgearbeitet: wahlweise mit laufendem Auffüllen oder in Gruppen.
+    Die Warteliste gilt nur für den aktuellen Durchlauf. Nur eine Automation
+    pro Zigbee2MQTT-Instanz verwenden.
+  domain: automation
+  author: jxstNo1
+  source_url: https://github.com/jxstNo1/z2m-auto-update/blob/main/z2m_auto_ota_v3.yaml
+  homeassistant:
+    min_version: "2024.10.0"
+
+  input:
+    start_mode:
+      name: Update-Modus
+      default: instant
+      selector:
+        select:
+          options:
+            - label: "Sofort bei Verfügbarkeit"
+              value: instant
+            - label: "Täglich nach Zeitplan"
+              value: scheduled
+
+    start_time:
+      name: Geplante Startzeit
+      default: "03:00:00"
+      selector:
+        time: {}
+
+    parallel_limit:
+      name: Maximale parallele Updates
+      description: >
+        Eine beliebige positive ganze Zahl
+        eingeben. Empfohlen: 1.
+      default: "1"
+      selector:
+        text:
+          type: text
+
+    queue_strategy:
+      name: Abarbeitung der Warteschlange
+      description: >
+        Auffüllen startet das nächste Update, sobald ein Platz frei wird.
+        Gruppen warten auf das Ende aller laufenden Updates, bevor die
+        nächste Gruppe mit bis zu der eingestellten Anzahl beginnt.
+      default: refill
+      selector:
+        select:
+          options:
+            - label: "Freie Plätze laufend auffüllen"
+              value: refill
+            - label: "Erst die ganze Gruppe abschließen"
+              value: batch
+
+    pause_seconds:
+      name: Pause zwischen Update-Starts
+      description: >
+        Abstand zwischen zwei Update-Anfragen
+        in Sekunden.
+      default: 5
+      selector:
+        number:
+          min: 0
+          max: 300
+          step: 1
+          mode: box
+          unit_of_measurement: s
+
+    mqtt_base_topic:
+      name: MQTT-Basistopic
+      description: >
+        Muss exakt mqtt.base_topic deiner Zigbee2MQTT-Instanz entsprechen,
+        einschließlich Groß-/Kleinschreibung. Hier ist MQTT voreingestellt.
+        Die Firmwareupdates werden weiterhin über Zigbee2MQTT ausgeführt.
+      default: MQTT
+      selector:
+        text: {}
+
+    excluded_entities:
+      name: Ausgeschlossene Firmwareupdates
+      description: >
+        Optional: Geräte auswählen, die nicht
+        automatisch aktualisiert werden sollen.
+      default: []
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: update
+              device_class: firmware
+
+variables:
+  selected_mode: !input start_mode
+  raw_limit: !input parallel_limit
+  queue_strategy: !input queue_strategy
+  pause_time: !input pause_seconds
+  topic_base: !input mqtt_base_topic
+  exclusions: !input excluded_entities
+
+mode: single
+max_exceeded: silent
+
+triggers:
+  - trigger: time
+    at: !input start_time
+    id: scheduled
+
+  - trigger: time_pattern
+    minutes: "/1"
+    id: instant
+
+  - trigger: template
+    id: newly_available
+    value_template: >-
+      {% set ns = namespace(found=false) %}
+      {% for e in integration_entities('mqtt')
+         if e.startswith('update.') and is_state(e, 'on') %}
+        {% set identifiers =
+           device_attr(e, 'identifiers') or [] %}
+        {% for ident in identifiers %}
+          {% if ident | length == 2
+             and ident[0] == 'mqtt'
+             and ident[1] is string
+             and ident[1].startswith('zigbee2mqtt_0x') %}
+            {% set ns.found = true %}
+          {% endif %}
+        {% endfor %}
+      {% endfor %}
+      {{ ns.found }}
+
+conditions:
+  - condition: template
+    value_template: >-
+      {{
+        (selected_mode == 'instant'
+         and trigger.id in ['instant', 'newly_available'])
+        or
+        (selected_mode == 'scheduled'
+         and trigger.id == 'scheduled')
+      }}
+
+actions:
+  - if:
+      - condition: template
+        value_template: >-
+          {{ not (raw_limit | string | regex_match('^[1-9][0-9]*$')) }}
+    then:
+      - stop: "Maximale parallele Updates muss eine positive ganze Zahl sein."
+        error: true
+
+  # Alle Zigbee2MQTT Firmware-Entitäten finden
+  - variables:
+      z2m_devices: >-
+        {% set ns = namespace(devices=[]) %}
+        {% for e in integration_entities('mqtt')
+           if e.startswith('update.') %}
+          {% set identifiers =
+             device_attr(e, 'identifiers') or [] %}
+          {% for ident in identifiers %}
+            {% if ident | length == 2
+               and ident[0] == 'mqtt'
+               and ident[1] is string
+               and ident[1].startswith('zigbee2mqtt_0x') %}
+              {% set ns.devices = ns.devices + [
+                {
+                  'entity': e,
+                  'ieee': ident[1][12:]
+                }
+              ] %}
+            {% endif %}
+          {% endfor %}
+        {% endfor %}
+        {{ ns.devices | unique(attribute='entity') | list }}
+
+  # Nur verfügbare Updates berücksichtigen
+  - variables:
+      pending: >-
+        {% set ns = namespace(items=[]) %}
+        {% for d in z2m_devices %}
+          {% set p = state_attr(d.entity, 'in_progress') %}
+          {% if is_state(d.entity, 'on')
+             and d.entity not in exclusions
+             and not (p is sameas true or
+                      (p is number and p is not sameas false)) %}
+            {% set ns.items = ns.items + [d] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.items }}
+
+  # 'single' hält nur einen Scheduler aktiv; die OTA-Geräte laufen parallel.
+  - variables:
+      limit: "{{ raw_limit | int }}"
+      requested: []
+
+  - repeat:
+      for_each: "{{ pending }}"
+      sequence:
+        # In Gruppen vor Position 1, N+1, 2N+1 ... vollständig leeren.
+        # Bei slot_limit=1 darf kein Update mehr laufen, sonst reicht ein Platz.
+        - variables:
+            slot_limit: >-
+              {{ 1 if queue_strategy == 'batch'
+                      and (repeat.index - 1) % limit == 0 else limit }}
+
+        # Ein YAML-Anker teilt die Statusprüfung mit dem Abschluss unten.
+        # Laufende Updates (auch ausgeschlossene) zählen bei der Grenze mit.
+        - wait_template: &wait_for_capacity >-
+            {% set ns = namespace(active=0) %}
+            {% for d in z2m_devices %}
+              {% set p = state_attr(d.entity, 'in_progress') %}
+              {% if p is sameas true or (p is number and p is not sameas false)
+                 or (d.entity in requested and
+                     (not has_value(d.entity) or p is none)) %}
+                {% set ns.active = ns.active + 1 %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.active < slot_limit }}
+          timeout: "03:00:00"
+          continue_on_timeout: false
+
+        - if:
+            - condition: template
+              value_template: >-
+                {% set p = state_attr(repeat.item.entity, 'in_progress') %}
+                {{ is_state(repeat.item.entity, 'on')
+                   and not (p is sameas true or
+                            (p is number and p is not sameas false)) }}
+          then:
+            - variables:
+                requested: "{{ requested + [repeat.item.entity] }}"
+
+            - action: mqtt.publish
+              data:
+                topic: >-
+                  {{ topic_base }}/bridge/request/device/ota_update/update
+                payload: >-
+                  {{ {'id': repeat.item.ieee} | to_json }}
+                qos: 0
+                retain: false
+
+            # Nicht weitere Anfragen senden, bevor der Start bestätigt ist.
+            # Ein sofort abgeschlossenes Update (off) ist ebenfalls gültig.
+            - wait_template: >-
+                {% set p = state_attr(repeat.item.entity, 'in_progress') %}
+                {{ p is sameas true or
+                   (p is number and p is not sameas false) or
+                   is_state(repeat.item.entity, 'off') }}
+              timeout: "00:02:00"
+              continue_on_timeout: false
+
+            - delay:
+                seconds: "{{ pause_time | int(0) }}"
+
+  # Auch die letzten gestarteten Updates abwarten.
+  # Bei verschwundenem Status eines angefragten Geräts bleibt dessen Platz belegt.
+  - variables:
+      slot_limit: 1
+  - wait_template: *wait_for_capacity
+    timeout: "03:00:00"
+    continue_on_timeout: false
+
