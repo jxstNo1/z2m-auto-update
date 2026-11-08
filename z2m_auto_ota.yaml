@@ -1,5 +1,5 @@
 blueprint:
-  name: "Zigbee2MQTT – Auto OTA Manager v3"
+  name: "Zigbee2MQTT – Auto OTA Manager"
   description: >
     Automatische Firmwareupdates aller erkannten
     Zigbee2MQTT-Geräte mit frei einstellbarer
@@ -10,7 +10,7 @@ blueprint:
     pro Zigbee2MQTT-Instanz verwenden.
   domain: automation
   author: jxstNo1
-  source_url: https://github.com/jxstNo1/z2m-auto-update/blob/main/z2m_auto_ota_v3.yaml
+  source_url: https://github.com/jxstNo1/z2m-auto-update/blob/main/z2m_auto_ota.yaml
   homeassistant:
     min_version: "2024.10.0"
 
